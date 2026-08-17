@@ -7,7 +7,6 @@ app = Flask(__name__)
 CORS(app)
 
 def clean_youtube_url(raw_url):
-    # Extract only the valid video ID (strips out ?si= and other tracking queries)
     match = re.search(r'(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|shorts\/))([\w-]{11})', raw_url)
     if match:
         return f"https://www.youtube.com/watch?v={match.group(1)}"
@@ -23,34 +22,40 @@ def get_download():
 
     clean_url = clean_youtube_url(url)
 
-    # yt-dlp configuration using native Python API
+    # Use the iOS/TV embedded client rotation to bypass the datacenter bot check
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
         'skip_download': True,
-        # Mimic Android client to bypass cloud server datacenter blocks
         'extractor_args': {
             'youtube': {
-                'player_client': ['android', 'web']
+                'player_client': ['ios', 'android', 'mweb'],
+                'player_skip': ['webpage', 'configs', 'js']
             }
+        },
+        'http_headers': {
+            'User-Agent': 'com.google.ios.youtube/19.29.1 (iPhone14,3; U; CPU iOS 17_5_1 like Mac OS X; en_US)'
         }
     }
 
     if format_type == 'mp3':
-        ydl_opts['format'] = 'bestaudio/best'
+        ydl_opts['format'] = 'ba/b'
     else:
-        ydl_opts['format'] = f'bestvideo[height<={format_type}]+bestaudio/best[height<={format_type}]/best'
+        ydl_opts['format'] = f'b[height<={format_type}]/bv*[height<={format_type}]+ba/b'
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(clean_url, download=False)
             
-            # Extract direct URL from formats
             download_url = None
             if 'url' in info:
                 download_url = info['url']
             elif 'formats' in info and len(info['formats']) > 0:
-                download_url = info['formats'][-1]['url']
+                # Find the direct progressive/combined stream URL
+                for f in reversed(info['formats']):
+                    if f.get('url') and (f.get('vcodec') != 'none' or format_type == 'mp3'):
+                        download_url = f['url']
+                        break
 
             if download_url:
                 return jsonify({'success': True, 'downloadUrl': download_url})
