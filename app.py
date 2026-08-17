@@ -6,18 +6,17 @@ import re
 app = Flask(__name__)
 CORS(app)
 
-# Rotating list of public high-speed Cobalt processing nodes
-COBALT_INSTANCES = [
-    "https://cobalt-api.kwiatekm.com",
-    "https://api.cobalt.tools",
-    "https://cobalt.hyonsu.com"
+# Rotating Piped API instances that handle YouTube stream extraction
+PIPED_INSTANCES = [
+    "https://pipedapi.kavin.rocks",
+    "https://api.piped.privacydev.net",
+    "https://piped-api.garudalinux.org",
+    "https://pipedapi.tokhmi.xyz"
 ]
 
-def clean_youtube_url(raw_url):
-    match = re.search(r'(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|shorts\/))([\w-]{11})', raw_url)
-    if match:
-        return f"https://www.youtube.com/watch?v={match.group(1)}"
-    return raw_url
+def extract_video_id(url):
+    match = re.search(r'(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|shorts\/))([\w-]{11})', url)
+    return match.group(1) if match else None
 
 @app.route('/download', methods=['GET'])
 def get_download():
@@ -27,33 +26,45 @@ def get_download():
     if not raw_url:
         return jsonify({'success': False, 'error': 'No URL provided'}), 400
 
-    clean_url = clean_youtube_url(raw_url)
+    video_id = extract_video_id(raw_url)
+    if not video_id:
+        return jsonify({'success': False, 'error': 'Invalid YouTube link'}), 400
 
-    payload = {
-        "url": clean_url,
-        "videoQuality": format_type if format_type != 'mp3' else '720',
-        "downloadMode": "audio" if format_type == 'mp3' else "auto",
-        "youtubeVideoCodec": "h264"
-    }
-
-    headers = {
-        "Accept": "application/json",
-        "Content-Type": "application/json"
-    }
-
-    for instance in COBALT_INSTANCES:
+    # Query public piped instances
+    for instance in PIPED_INSTANCES:
         try:
-            res = requests.post(instance, json=payload, headers=headers, timeout=10)
+            res = requests.get(f"{instance}/streams/{video_id}", timeout=6)
             if res.status_code == 200:
                 data = res.json()
-                if 'url' in data:
-                    return jsonify({'success': True, 'downloadUrl': data['url']})
-                if 'stream' in data:
-                    return jsonify({'success': True, 'downloadUrl': data['stream']})
+
+                # If audio requested
+                if format_type == 'mp3':
+                    audio_streams = data.get('audioStreams', [])
+                    if audio_streams:
+                        # Grab the highest bitrate audio stream
+                        return jsonify({'success': True, 'downloadUrl': audio_streams[0]['url']})
+
+                # Check video streams (progressive / combined)
+                video_streams = data.get('videoStreams', [])
+                
+                # First pass: try matching exact quality resolution
+                for s in video_streams:
+                    if format_type in str(s.get('quality', '')) and s.get('videoOnly') is False:
+                        return jsonify({'success': True, 'downloadUrl': s['url']})
+
+                # Second pass: pick the first combined stream with both audio and video
+                for s in video_streams:
+                    if s.get('videoOnly') is False:
+                        return jsonify({'success': True, 'downloadUrl': s['url']})
+
+                # Fallback: pick any top stream URL
+                if video_streams:
+                    return jsonify({'success': True, 'downloadUrl': video_streams[0]['url']})
+
         except Exception:
             continue
 
-    return jsonify({'success': False, 'error': 'Upstream nodes busy. Please try again.'}), 502
+    return jsonify({'success': False, 'error': 'Failed to resolve stream link. Please try again.'}), 502
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
