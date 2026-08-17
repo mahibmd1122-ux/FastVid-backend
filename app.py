@@ -6,17 +6,18 @@ import re
 app = Flask(__name__)
 CORS(app)
 
-# Rotating list of reliable public Invidious instances
-INVIDIOUS_INSTANCES = [
-    "https://inv.tux.pizza",
-    "https://invidious.nerdvpn.de",
-    "https://vid.priv.au",
-    "https://invidious.projectsegfau.lt"
+# Rotating list of public high-speed Cobalt processing nodes
+COBALT_INSTANCES = [
+    "https://cobalt-api.kwiatekm.com",
+    "https://api.cobalt.tools",
+    "https://cobalt.hyonsu.com"
 ]
 
-def extract_video_id(url):
-    match = re.search(r'(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|shorts\/))([\w-]{11})', url)
-    return match.group(1) if match else None
+def clean_youtube_url(raw_url):
+    match = re.search(r'(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|shorts\/))([\w-]{11})', raw_url)
+    if match:
+        return f"https://www.youtube.com/watch?v={match.group(1)}"
+    return raw_url
 
 @app.route('/download', methods=['GET'])
 def get_download():
@@ -26,41 +27,33 @@ def get_download():
     if not raw_url:
         return jsonify({'success': False, 'error': 'No URL provided'}), 400
 
-    video_id = extract_video_id(raw_url)
-    if not video_id:
-        return jsonify({'success': False, 'error': 'Invalid YouTube link'}), 400
+    clean_url = clean_youtube_url(raw_url)
 
-    # Query Invidious instances sequentially until one resolves the stream
-    for instance in INVIDIOUS_INSTANCES:
+    payload = {
+        "url": clean_url,
+        "videoQuality": format_type if format_type != 'mp3' else '720',
+        "downloadMode": "audio" if format_type == 'mp3' else "auto",
+        "youtubeVideoCodec": "h264"
+    }
+
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+    }
+
+    for instance in COBALT_INSTANCES:
         try:
-            api_endpoint = f"{instance}/api/v1/videos/{video_id}"
-            res = requests.get(api_endpoint, timeout=8)
-            
+            res = requests.post(instance, json=payload, headers=headers, timeout=10)
             if res.status_code == 200:
                 data = res.json()
-                
-                # If audio requested
-                if format_type == 'mp3':
-                    audio_streams = data.get('adaptiveFormats', [])
-                    for stream in audio_streams:
-                        if stream.get('type', '').startswith('audio'):
-                            return jsonify({'success': True, 'downloadUrl': stream['url']})
-                
-                # Check combined (progressive) video formats first
-                combined_streams = data.get('formatStreams', [])
-                for stream in reversed(combined_streams):
-                    quality_label = stream.get('qualityLabel', '')
-                    if format_type in quality_label:
-                        return jsonify({'success': True, 'downloadUrl': stream['url']})
-                
-                # Fallback to highest available combined stream
-                if combined_streams:
-                    return jsonify({'success': True, 'downloadUrl': combined_streams[-1]['url']})
-                    
+                if 'url' in data:
+                    return jsonify({'success': True, 'downloadUrl': data['url']})
+                if 'stream' in data:
+                    return jsonify({'success': True, 'downloadUrl': data['stream']})
         except Exception:
             continue
 
-    return jsonify({'success': False, 'error': 'All instances busy. Please try again in a few seconds.'}), 502
+    return jsonify({'success': False, 'error': 'Upstream nodes busy. Please try again.'}), 502
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
